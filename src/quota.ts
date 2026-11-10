@@ -16,7 +16,7 @@ export function renderQuota(view:QuotaView,width:number,paint:Paint,now=Date.now
  const layouts=[{title:true,reset:true,bar:true},{title:true,reset:false,bar:true},{title:true,reset:true,bar:false},{title:true,reset:false,bar:false}];
  let line="";
  for(const layout of layouts){
-  const parts=items.map(item=>`${item.label}${layout.reset&&item.reset?` ${item.reset}`:""}${layout.bar?" ":""}${layout.bar?"":" "}${item.used}%`);
+  const parts=items.map(item=>`${item.label}${layout.reset&&item.reset?` ${item.reset}`:""}${layout.bar?"  ":" "}${item.used}%`);
   const base=(layout.title?"Claude".length+divider.length:0)+parts.join(divider).length;
   const barCount=layout.bar?items.length:0;
   if(base+barCount*4>width)continue;
