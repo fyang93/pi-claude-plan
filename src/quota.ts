@@ -7,7 +7,15 @@ export function formatDuration(ms: number): string { const s=Math.max(0,Math.flo
 function color(left:number): Color { return left<25?"error":left<50?"warning":"muted" }
 export function renderQuota(view:QuotaView,width:number,paint:Paint,now=Date.now()):string[] {
  const items=[...[ ["5h",view.usage?.five_hour], ["Week",view.usage?.seven_day], ["Sonnet",view.usage?.seven_day_sonnet] ] as const].filter((x):x is [string,UsageWindow]=>!!x[1]&&typeof x[1].utilization==="number");
- let line=view.error||items.map(([label,w])=>{const used=Math.round(Math.max(0,Math.min(100,w.utilization!))), left=100-used, reset=w.resets_at?formatDuration(Date.parse(w.resets_at)-now):""; return `${paint.bold(paint.fg(color(left),label))}${reset?` ${paint.fg(color(left),reset)}`:""} ${paint.fg(color(left),`${used}%`)}`}).join(" │ ");
- if(line.length>width) line=line.slice(0,Math.max(0,width-1))+"…";
+ const make=(title:boolean,bar:boolean,resetTime:boolean,windows:number)=>{
+  const selected=items.slice(-windows); const parts:string[]=[];
+  if(title)parts.push(paint.bold(paint.fg("text","Claude")));
+  if(view.error)parts.push(paint.fg("dim",view.error));
+  for(const [label,w] of selected){const used=Math.round(Math.max(0,Math.min(100,w.utilization!))),left=100-used,c=color(left),reset=resetTime&&w.resets_at?formatDuration(Date.parse(w.resets_at)-now):"";const widthForBar=bar?Math.max(4,Math.floor((width-30)/Math.max(1,selected.length))):0;const fill=Math.round(used/100*widthForBar);parts.push(`${paint.bold(paint.fg(c,label))}${reset?` ${paint.fg(c,reset)}`:""}${bar?` ${paint.fg(c,"━".repeat(fill))}${paint.fg("dim","━".repeat(widthForBar-fill))}`:""} ${paint.fg(c,`${used}%`)}`)}
+  return parts.join(paint.fg("dim"," │ "));
+ };
+ const candidates=[[true,true,true,3],[true,true,true,2],[false,true,true,2],[false,false,true,2],[false,false,false,2],[false,false,false,1]] as const;
+ let line=candidates.map(c=>make(...c)).find(s=>[...s.replace(/\x1b\\[[0-9;]*m/g,"")].length<=width)||"";
+ if(!line&&view.error)line=paint.fg("dim",view.error.slice(0,Math.max(0,width-1))+"…");
  return [line,paint.fg("dim","─".repeat(Math.max(1,width)))];
 }
