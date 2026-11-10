@@ -1,0 +1,10 @@
+{
+	"name": "pi-claude-plan",
+	"version": "0.1.0",
+	"description": "pi extension showing Claude plan usage and reset times",
+	"type": "module",
+	"license": "MIT",
+	"keywords": ["pi-package", "pi-extension", "anthropic", "claude", "usage", "quota"],
+	"pi": { "extensions": ["./src/index.ts"] },
+	"scripts": { "test": "node --test test/*.test.ts" }
+}
