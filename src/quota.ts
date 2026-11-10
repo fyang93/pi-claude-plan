@@ -27,7 +27,7 @@ export function renderQuota(view:QuotaView,width:number,paint:Paint,now=Date.now
    const bar=layout.bar?` ${paint.fg(item.color,"━".repeat(Math.round(item.used/100*barWidth)))}${paint.fg("dim","━".repeat(barWidth-Math.round(item.used/100*barWidth)))}`:"";
    return `${label}${reset}${bar} ${paint.fg(item.color,`${item.used}%`)}`;
   });
-  line=`${layout.title?`${paint.bold(paint.fg("text","Claude"))}${items.length?divider:""}`:""}${styled.join(paint.fg("dim",divider))}`;
+  line=`${layout.title?`${paint.bold(paint.fg("text","Claude"))}${items.length?paint.fg("dim",divider):""}`:""}${styled.join(paint.fg("dim",divider))}`;
   break;
  }
  if(!line&&view.error)line=paint.fg("dim",view.error.slice(0,Math.max(0,width-1))+"…");

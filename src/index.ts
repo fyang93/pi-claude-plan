@@ -18,5 +18,4 @@ export default function(pi:ExtensionAPI){let view:QuotaView={};let timer:ReturnT
  pi.on("session_start",async(_e,ctx)=>{if(!ctx.hasUI)return;void refresh(ctx);timer=setInterval(()=>void refresh(ctx),REFRESH);timer.unref?.()});
  pi.on("agent_end",async(_e,ctx)=>{if(ctx.hasUI)void refresh(ctx)});
  pi.on("session_shutdown",async(_e,ctx)=>{if(timer)clearInterval(timer);ctx.ui.setWidget(KEY,undefined)});
- pi.registerCommand("claude",{description:"Claude plan: refresh usage (reset redemption is not exposed by Anthropic)",getArgumentCompletions:(p:string)=>[{value:"reset",label:"reset",description:"Show reset status"}].filter(x=>x.value.startsWith(p)),handler:async(args,ctx)=>{await refresh(ctx);if(args.trim().toLowerCase()==="reset"){ctx.ui.notify("Claude usage resets automatically at the times shown; Anthropic does not expose a redeem-reset endpoint.","info")}else ctx.ui.notify(view.error||"Claude limits refreshed.",view.error?"error":"info")}})
 }
