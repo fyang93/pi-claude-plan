@@ -1,18 +1,19 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { renderQuota, type QuotaView, type Paint, type UsageResponse } from "./quota.ts";
+import { accountKey, agentDir, sharedRefresh, type Fetched } from "./shared.ts";
 
 const BASE = "https://api.anthropic.com";
 const KEY = "claude-plan";
 const REFRESH_MS = 5 * 60_000;
 const MIN_REQUEST_INTERVAL_MS = 60_000;
+// The periodic poll only fetches when no session has refreshed within (almost) a full period.
+const TIMER_MIN_AGE_MS = REFRESH_MS - 5_000;
 
 async function token(): Promise<string | undefined> {
-	const dir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 	try {
-		const auth = JSON.parse(await readFile(join(dir, "auth.json"), "utf8"))?.anthropic;
+		const auth = JSON.parse(await readFile(join(agentDir(), "auth.json"), "utf8"))?.anthropic;
 		return typeof auth?.access === "string" && auth.access.trim() ? auth.access : undefined;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return;
@@ -23,9 +24,10 @@ async function token(): Promise<string | undefined> {
 export default function (pi: ExtensionAPI) {
 	let view: QuotaView = {};
 	let timer: ReturnType<typeof setInterval> | undefined;
-	let refreshing: Promise<void> | undefined;
-	let nextRequestAt = 0;
+	let refreshing: Promise<boolean> | undefined;
 	let hasLogin = false;
+	// Shared by every pi session, so many open sessions cost no more requests than one.
+	const shared = sharedRefresh<QuotaView>("claude-plan-usage");
 
 	const paint = (ctx: ExtensionContext): Paint => ({
 		fg: (color, text) => ctx.ui.theme.fg(color, text),
@@ -36,46 +38,56 @@ export default function (pi: ExtensionAPI) {
 		invalidate: () => {},
 	}), { placement: "belowEditor" });
 
-	const refresh = (ctx: ExtensionContext): Promise<void> | undefined => {
-		if (refreshing) return refreshing;
-		if (Date.now() < nextRequestAt) return;
-		// Count failed attempts too, so errors cannot trigger a request after every turn.
-		nextRequestAt = Date.now() + MIN_REQUEST_INTERVAL_MS;
-		refreshing = (async () => {
+	// Failed attempts count as attempts, so errors cannot trigger a request after every turn.
+	const fetchUsage = async (access: string, previous: QuotaView = {}): Promise<Fetched<QuotaView>> => {
+		try {
+			const response = await fetch(`${BASE}/api/oauth/usage`, {
+				headers: { Authorization: `Bearer ${access}`, "anthropic-beta": "oauth-2025-04-20" },
+				signal: AbortSignal.timeout(20_000),
+			});
+			if (response.status === 401 || response.status === 403) {
+				return { view: { ...previous, error: "login expired — /login" } };
+			}
+			if (response.status === 429) {
+				const retryAfter = response.headers.get("Retry-After");
+				const retryAt = retryAfter === null ? Number.NaN
+					: /^\d+(\.\d+)?$/.test(retryAfter.trim())
+						? Date.now() + Number(retryAfter) * 1000 : Date.parse(retryAfter);
+				return {
+					view: { ...previous, error: "rate limited — cooling down" },
+					retryAt: Math.max(Date.now() + REFRESH_MS, Number.isFinite(retryAt) ? retryAt : 0),
+				};
+			}
+			if (!response.ok) return { view: { ...previous, error: "unavailable" } };
+			return { view: { usage: await response.json() as UsageResponse } };
+		} catch {
+			return { view: { ...previous, error: "unavailable" } };
+		}
+	};
+
+	/** Resolves to whether this call sent a request, rather than reusing the shared snapshot. */
+	const refresh = (ctx: ExtensionContext, minAge = MIN_REQUEST_INTERVAL_MS): Promise<boolean> => {
+		refreshing ??= (async () => {
 			try {
 				const access = await token();
 				hasLogin = Boolean(access);
 				if (!access) {
 					view = {};
+					shared.forget();
 					ctx.ui.setWidget(KEY, undefined);
-					return;
+					return false;
 				}
-				const response = await fetch(`${BASE}/api/oauth/usage`, {
-					headers: { Authorization: `Bearer ${access}`, "anthropic-beta": "oauth-2025-04-20" },
-					signal: AbortSignal.timeout(20_000),
-				});
-				if (response.status === 429) {
-					const retryAfter = response.headers.get("Retry-After");
-					const retryAt = retryAfter === null ? Number.NaN
-						: /^\d+(\.\d+)?$/.test(retryAfter.trim())
-							? Date.now() + Number(retryAfter) * 1000 : Date.parse(retryAfter);
-					nextRequestAt = Math.max(Date.now() + REFRESH_MS, Number.isFinite(retryAt) ? retryAt : 0);
-				}
-				if (response.status === 401 || response.status === 403) {
-					view = { ...view, error: "login expired — /login" };
-				} else if (response.status === 429) {
-					view = { ...view, error: "rate limited — cooling down" };
-				} else if (!response.ok) {
-					view = { ...view, error: "unavailable" };
-				} else {
-					view = { usage: await response.json() as UsageResponse };
-				}
+				const result = await shared.refresh(accountKey(access), minAge, previous => fetchUsage(access, previous));
+				view = result.view ?? {};
+				render(ctx);
+				return result.fetched;
 			} catch {
 				view = { ...view, error: "unavailable" };
+				render(ctx);
+				return false;
 			} finally {
 				refreshing = undefined;
 			}
-			render(ctx);
 		})();
 		return refreshing;
 	};
@@ -84,7 +96,7 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		void refresh(ctx);
 		if (timer) clearInterval(timer);
-		timer = setInterval(() => void refresh(ctx), REFRESH_MS);
+		timer = setInterval(() => void refresh(ctx, TIMER_MIN_AGE_MS), REFRESH_MS);
 		timer.unref?.();
 	});
 	pi.on("agent_end", async (_event, ctx) => {
@@ -104,14 +116,14 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Usage: /claude — refresh usage. Reset redemption is not supported by this extension.", "warning");
 				return;
 			}
-			const throttled = !refreshing && Date.now() < nextRequestAt;
-			await refresh(ctx);
+			const fetched = await refresh(ctx);
 			if (!hasLogin && !view.error) {
 				ctx.ui.notify("pi is not logged in to Anthropic. Run /login and pick Anthropic.", "error");
 			} else if (view.error) {
 				ctx.ui.notify(view.error, "error");
-			} else if (throttled) {
-				ctx.ui.notify(`Claude usage cached; next refresh allowed in ${Math.ceil((nextRequestAt - Date.now()) / 1000)}s.`, "info");
+			} else if (!fetched) {
+				const wait = Math.max(0, Math.ceil((shared.nextAt(MIN_REQUEST_INTERVAL_MS) - Date.now()) / 1000));
+				ctx.ui.notify(`Claude usage cached; next refresh allowed in ${wait}s.`, "info");
 			} else {
 				ctx.ui.notify("Claude limits refreshed.", "info");
 			}
